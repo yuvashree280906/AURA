@@ -42,6 +42,10 @@ export default function App() {
     }))
   );
 
+  const [broadcastTranscription, setBroadcastTranscription] = useState<string>(
+    'Emergency broadcast audio feed: Flash flood warnings remain active across sector 4. Water levels rising rapidly along lower basin bridges. Evacuate immediately to designated relief shelters on high ground.'
+  );
+
   // Reports
   const [reports, setReports] = useState<TestSessionReport[]>([]);
   const [activeReportToAnalyze, setActiveReportToAnalyze] = useState<TestSessionReport | undefined>();
@@ -101,6 +105,14 @@ export default function App() {
     setVideoUrl(sc.sampleVideoUrl);
     setNetwork(NETWORK_PROFILES[sc.defaultNetworkProfile] || NETWORK_PROFILES.weak_2g);
 
+    const captionsText = sc.items
+      .filter((it) => it.type === 'caption')
+      .map((it) => it.content)
+      .join(' ');
+    setBroadcastTranscription(
+      captionsText || `${sc.title}: Broadcast verbal instruction and spoken presentation stream.`
+    );
+
     setBroadcastItems(
       sc.items.map((it, idx) => ({
         ...it,
@@ -124,6 +136,7 @@ export default function App() {
     items: ContentItem[];
     mode: BroadcastMode;
     networkProfileType: string;
+    transcription?: string;
   }) => {
     setScenarioTitle(config.title);
     setScenarioDomain(config.domain);
@@ -131,6 +144,7 @@ export default function App() {
     setMode(config.mode);
     setNetwork(NETWORK_PROFILES[config.networkProfileType] || NETWORK_PROFILES.weak_2g);
     setBroadcastItems(config.items);
+    setBroadcastTranscription(config.transcription || '');
     setActivePage('studio');
   };
 
@@ -198,6 +212,7 @@ export default function App() {
             videoUrl={videoUrl}
             initialMode={mode}
             initialNetwork={network}
+            transcription={broadcastTranscription}
             onNavigate={setActivePage}
             onSaveReport={handleSaveReport}
           />

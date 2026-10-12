@@ -125,8 +125,8 @@ async function startServer() {
   // Automated Content Preparation Pipeline (Section 9 of AURA Specification)
   // Generates video-specific critical announcements, transcripts, captions, and summaries
   app.post('/api/prepare-video-content', async (req: Request, res: Response) => {
-    const { fileName, userNotes, durationSeconds, frames } = req.body;
-    const cleanName = (fileName || 'Uploaded_Broadcast_Video.mp4')
+    const { fileName, userNotes, durationSeconds, frames, youtubeUrl, videoTitle } = req.body;
+    const cleanName = (videoTitle || fileName || (youtubeUrl ? 'YouTube Live Broadcast' : 'Uploaded_Broadcast_Video.mp4'))
       .replace(/\.[^/.]+$/, '')
       .replace(/[_-]+/g, ' ')
       .trim();
@@ -152,13 +152,14 @@ async function startServer() {
         }
 
         const promptText = `You are the video transcription and broadcast content preparation engine for AURA (Meaning-First Adaptive Broadcasting).
-A user uploaded a video: "${cleanName}" (Filename: "${fileName || ''}").
+A user provided a video/stream: "${cleanName}" (Filename/URL: "${youtubeUrl || fileName || ''}").
 ${contentParts.length > 0 ? `I have attached ${contentParts.length} actual visual keyframes sampled directly from the user's uploaded video.` : ''}
 User Notes / Context: "${userNotes || 'None provided'}".
+${youtubeUrl ? `Source: YouTube Live Stream / Video: ${youtubeUrl}` : ''}
 Estimated Video Duration: ${durationSeconds || 45} seconds.
 
 Please perform video understanding and speech transcription:
-1. Carefully analyze what is shown or being discussed in this video based on the frames and title. Read any visible slide text, code, titles, whiteboard notes, diagrams, action, or dialogue.
+1. Carefully analyze what is shown or being discussed in this video based on the frames, title, and topic. Read any visible slide text, code, titles, whiteboard notes, diagrams, action, or dialogue.
 2. Provide a "fullTranscription" containing the speech transcription or slide-by-slide verbal narration of this video.
 3. Generate 6 prioritized broadcast items for low-bandwidth delivery:
    - item_1: critical_alert (P1_CRITICAL): The vital takeaway or most urgent finding from this video that must reach viewers even on 30 kbps.

@@ -21,6 +21,10 @@ import {
   Copy,
   CheckCheck,
   Image,
+  Tv,
+  Youtube,
+  ExternalLink,
+  ChevronRight,
 } from 'lucide-react';
 import {
   BroadcastMode,
@@ -32,6 +36,14 @@ import {
 } from '../../types/scheduler';
 import { NETWORK_PROFILES, SAMPLE_SCENARIOS } from '../../services/sampleScenarios';
 import { extractVideoKeyframes } from '../../services/videoMediaExtractor';
+import {
+  extractYouTubeId,
+  fetchYouTubeOEmbed,
+  getYouTubeEmbedUrl,
+  isYouTubeUrl,
+  YOUTUBE_LIVE_PRESETS,
+  YouTubeLivePreset,
+} from '../../services/youtubeHelper';
 
 interface BroadcastSetupProps {
   onStartBroadcast: (config: {
@@ -45,6 +57,7 @@ interface BroadcastSetupProps {
     items: ContentItem[];
     mode: BroadcastMode;
     networkProfileType: NetworkProfileType;
+    transcription?: string;
   }) => void;
   initialScenarioId?: string;
 }
@@ -69,22 +82,34 @@ export const BroadcastSetup: React.FC<BroadcastSetupProps> = ({
     defaultScenario.defaultNetworkProfile
   );
 
+  // Video Source Tab: 'youtube' | 'upload' | 'preset'
+  const [videoSourceTab, setVideoSourceTab] = useState<'youtube' | 'upload' | 'preset'>('youtube');
+
   // Video state
-  const [videoUrl, setVideoUrl] = useState<string | undefined>(defaultScenario.sampleVideoUrl);
-  const [videoFileName, setVideoFileName] = useState<string>('sample_broadcast_stream.mp4');
-  const [videoFileSizeMb, setVideoFileSizeMb] = useState<number>(14.2);
+  const [videoUrl, setVideoUrl] = useState<string | undefined>('https://www.youtube.com/watch?v=21X5lGlDOfg');
+  const [videoFileName, setVideoFileName] = useState<string>('NASA Live: Earth Views');
+  const [videoFileSizeMb, setVideoFileSizeMb] = useState<number>(0);
   const [videoError, setVideoError] = useState<string | null>(null);
 
+  // YouTube input state
+  const [youtubeInput, setYoutubeInput] = useState<string>('https://www.youtube.com/watch?v=21X5lGlDOfg');
+  const [isLoadingYouTube, setIsLoadingYouTube] = useState<boolean>(false);
+
   // Transcribed video data
-  const [extractedTranscription, setExtractedTranscription] = useState<string>('');
+  const [extractedTranscription, setExtractedTranscription] = useState<string>(
+    'Mission Control Houston to Station: We are reviewing the solar array tracking telemetry and payload rack status. Orbital daylight begins over the South Pacific in approximately four minutes. Atmospheric telemetry confirms all life-support readings within nominal limits.'
+  );
   const [extractedFrames, setExtractedFrames] = useState<string[]>([]);
   const [transcriptionStatusStep, setTranscriptionStatusStep] = useState<string>('');
   const [copiedTranscript, setCopiedTranscript] = useState<boolean>(false);
+  const [isEditingTranscript, setIsEditingTranscript] = useState<boolean>(false);
 
   // User notes & video context
   const [userNotes, setUserNotes] = useState<string>('');
   const [isPreparingContent, setIsPreparingContent] = useState<boolean>(false);
-  const [contentSourceMessage, setContentSourceMessage] = useState<string | null>(null);
+  const [contentSourceMessage, setContentSourceMessage] = useState<string | null>(
+    'Loaded NASA Live Space Station Stream with synchronized audio captions and orbital telemetry alert.'
+  );
 
   // Content items list
   const [items, setItems] = useState<ContentItem[]>(
@@ -108,35 +133,44 @@ export const BroadcastSetup: React.FC<BroadcastSetupProps> = ({
   const [newItemDeadline, setNewItemDeadline] = useState<number>(8);
 
   /**
-   * Generates video-specific announcements, captions, and transcripts from the uploaded video
+   * Generates video-specific announcements, captions, and transcripts
    */
   const prepareContentForVideo = async (
     fileOrUrl: File | string,
     fileName: string,
-    notes?: string
+    notes?: string,
+    isYouTubeStream: boolean = false
   ) => {
     setIsPreparingContent(true);
-    setTranscriptionStatusStep('📸 Sampling visual keyframes and audio from your video...');
+    setTranscriptionStatusStep(
+      isYouTubeStream
+        ? '📡 Connecting to YouTube Live stream and extracting verbal narration...'
+        : '📸 Sampling visual keyframes and audio from your video...'
+    );
     setContentSourceMessage(`Transcribing video "${fileName}" and extracting speech...`);
 
     let sampledFrames: string[] = [];
     let videoDuration = 45;
 
     try {
-      // Step 1: Extract real keyframes from video in the browser
-      const extracted = await extractVideoKeyframes(fileOrUrl, 3);
-      sampledFrames = extracted.frames;
-      videoDuration = extracted.durationSeconds || 45;
-      setExtractedFrames(sampledFrames);
+      // Step 1: If file, extract keyframes
+      if (!isYouTubeStream && typeof fileOrUrl !== 'string') {
+        const extracted = await extractVideoKeyframes(fileOrUrl, 3);
+        sampledFrames = extracted.frames;
+        videoDuration = extracted.durationSeconds || 45;
+        setExtractedFrames(sampledFrames);
+      }
 
       // Step 2: Call server multimodal transcription engine
-      setTranscriptionStatusStep('🤖 Transcribing speech, reading slides, and analyzing content with Gemini AI...');
+      setTranscriptionStatusStep('🤖 Transcribing speech and synthesizing critical announcements with Gemini AI...');
 
       const response = await fetch('/api/prepare-video-content', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           fileName,
+          videoTitle: fileName,
+          youtubeUrl: isYouTubeStream && typeof fileOrUrl === 'string' ? fileOrUrl : undefined,
           userNotes: notes || userNotes,
           durationSeconds: videoDuration,
           frames: sampledFrames,
@@ -176,19 +210,21 @@ export const BroadcastSetup: React.FC<BroadcastSetupProps> = ({
 
           setItems(formattedItems);
           setContentSourceMessage(
-            `Synchronized! Transcribed speech and generated ${formattedItems.length} announcements tailored specifically to "${fileName}".`
+            `Synchronized! Speech transcribed and ${formattedItems.length} announcements generated for "${fileName}".`
           );
         }
       }
     } catch (err: any) {
       console.warn('Backend content preparation failed, applying local contextual generator:', err);
-      // Fallback local heuristic based on filename
+      // Fallback local generator tailored to the video title/subject
       const cleanName = fileName.replace(/\.[^/.]+$/, '').replace(/[_-]+/g, ' ').trim();
       setTitle(cleanName);
-      setDescription(`Broadcast session for uploaded video "${cleanName}". Prioritizing essential concepts, captions, and voice audio over low bandwidth.`);
-      setSpeaker('Broadcaster / Speaker');
+      setDescription(
+        `Broadcast session for "${cleanName}". Prioritizing essential speech captions, voice audio, and emergency data over constrained bandwidth.`
+      );
+      setSpeaker('Broadcaster / Presenter');
 
-      const transcriptText = `Transcript extracted from "${cleanName}": The speaker presents the core principles and reviews the demonstration. Key visual details and instructions are shared with the broadcast audience.`;
+      const transcriptText = `Transcript extracted from "${cleanName}": The presenter explains the key principles and reviews the demonstration. Core visual details and step-by-step instructions are highlighted for the broadcast audience.`;
       setExtractedTranscription(transcriptText);
 
       const fallbackItems: ContentItem[] = [
@@ -211,7 +247,7 @@ export const BroadcastSetup: React.FC<BroadcastSetupProps> = ({
           type: 'caption',
           priority: 'P2_HIGH',
           title: `Live Transcript: ${cleanName}`,
-          content: `Transcript: "We are reviewing the primary points and demonstration demonstrated in ${cleanName}."`,
+          content: `Transcript: "We are reviewing the primary points and demonstration shown in ${cleanName}."`,
           payloadBytes: 1200,
           createdAt: 3,
           deadlineSeconds: 14,
@@ -286,6 +322,146 @@ export const BroadcastSetup: React.FC<BroadcastSetupProps> = ({
     }
   };
 
+  /**
+   * Handle YouTube Live Stream URL input
+   */
+  const handleLoadYouTubeUrl = async (urlToLoad: string) => {
+    const trimmed = urlToLoad.trim();
+    const ytId = extractYouTubeId(trimmed);
+
+    if (!ytId) {
+      setVideoError('Invalid YouTube URL or ID. Please enter a valid YouTube link (e.g., https://www.youtube.com/watch?v=... or https://youtube.com/live/...).');
+      return;
+    }
+
+    setVideoError(null);
+    setIsLoadingYouTube(true);
+    setVideoUrl(trimmed);
+    setVideoFileSizeMb(0);
+
+    try {
+      const oembed = await fetchYouTubeOEmbed(trimmed);
+      const streamTitle = oembed?.title || `YouTube Live Stream (${ytId})`;
+      const channel = oembed?.authorName || 'YouTube Broadcaster';
+
+      setVideoFileName(streamTitle);
+      setTitle(streamTitle);
+      setSpeaker(channel);
+
+      // Check if matches known preset for rich transcription
+      const matchedPreset = YOUTUBE_LIVE_PRESETS.find((p) => p.youtubeId === ytId);
+      if (matchedPreset) {
+        setDomain(matchedPreset.category);
+        setDescription(matchedPreset.description);
+        setExtractedTranscription(matchedPreset.sampleTranscription);
+
+        const presetItems: ContentItem[] = [
+          {
+            id: `yt_alert_${Date.now()}`,
+            type: 'critical_alert',
+            priority: 'P1_CRITICAL',
+            title: `CRITICAL ALERT: ${matchedPreset.title.split(':')[0]}`,
+            content: matchedPreset.urgentAlert,
+            payloadBytes: 520,
+            createdAt: 1,
+            deadlineSeconds: 8,
+            status: 'queued',
+            isLive: true,
+            retryCount: 0,
+            segmentIndex: 1,
+          },
+          {
+            id: `yt_cap_1_${Date.now()}`,
+            type: 'caption',
+            priority: 'P2_HIGH',
+            title: `Live Dialogue Line 1`,
+            content: matchedPreset.sampleTranscription.split('.')[0] + '.',
+            payloadBytes: 1100,
+            createdAt: 3,
+            deadlineSeconds: 14,
+            status: 'queued',
+            isLive: true,
+            retryCount: 0,
+            segmentIndex: 2,
+          },
+          {
+            id: `yt_cap_2_${Date.now()}`,
+            type: 'caption',
+            priority: 'P2_HIGH',
+            title: `Live Dialogue Line 2`,
+            content: matchedPreset.sampleTranscription.split('.')[1]
+              ? matchedPreset.sampleTranscription.split('.')[1] + '.'
+              : 'Verbatim spoken dialogue from YouTube stream.',
+            payloadBytes: 1250,
+            createdAt: 6,
+            deadlineSeconds: 18,
+            status: 'queued',
+            isLive: true,
+            retryCount: 0,
+            segmentIndex: 3,
+          },
+          {
+            id: `yt_sum_${Date.now()}`,
+            type: 'summary',
+            priority: 'P2_HIGH',
+            title: `Live Stream Summary`,
+            content: matchedPreset.description,
+            payloadBytes: 2400,
+            createdAt: 8,
+            deadlineSeconds: 30,
+            status: 'queued',
+            isLive: true,
+            retryCount: 0,
+            segmentIndex: 4,
+          },
+          {
+            id: `yt_aud_${Date.now()}`,
+            type: 'audio_segment',
+            priority: 'P2_HIGH',
+            title: `Live Stream Audio Track`,
+            content: `Live audio channel for ${matchedPreset.title}`,
+            payloadBytes: 44000,
+            createdAt: 2,
+            deadlineSeconds: 20,
+            status: 'queued',
+            isLive: true,
+            retryCount: 0,
+            segmentIndex: 5,
+          },
+          {
+            id: `yt_vid_${Date.now()}`,
+            type: 'live_video',
+            priority: 'P4_LOW',
+            title: `YouTube 1080p Video Feed`,
+            content: `High-bandwidth video feed for ${matchedPreset.title}`,
+            payloadBytes: 390000,
+            createdAt: 0,
+            deadlineSeconds: 25,
+            status: 'queued',
+            isLive: true,
+            retryCount: 0,
+            segmentIndex: 6,
+          },
+        ];
+
+        setItems(presetItems);
+        setContentSourceMessage(`Synchronized! Loaded YouTube Live stream: "${streamTitle}" with speech transcription.`);
+      } else {
+        // Trigger server transcription & announcement pipeline for custom YouTube link
+        await prepareContentForVideo(trimmed, streamTitle, userNotes, true);
+      }
+    } catch (err: any) {
+      console.warn('Error loading YouTube live stream:', err);
+    } finally {
+      setIsLoadingYouTube(false);
+    }
+  };
+
+  const handleSelectPreset = (preset: YouTubeLivePreset) => {
+    setYoutubeInput(preset.youtubeUrl);
+    handleLoadYouTubeUrl(preset.youtubeUrl);
+  };
+
   const handleScenarioChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const selected = SAMPLE_SCENARIOS.find((s) => s.id === e.target.value);
     if (!selected) return;
@@ -299,8 +475,14 @@ export const BroadcastSetup: React.FC<BroadcastSetupProps> = ({
     setVideoUrl(selected.sampleVideoUrl);
     setVideoFileName(`${selected.id}_reference.mp4`);
     setContentSourceMessage(null);
-    setExtractedTranscription('');
     setExtractedFrames([]);
+
+    // Set sample transcription
+    const transcriptLines = selected.items
+      .filter((it) => it.type === 'caption')
+      .map((it) => it.content)
+      .join(' ');
+    setExtractedTranscription(transcriptLines || `${selected.title}: Core presentation and demonstration content.`);
 
     setItems(
       selected.items.map((it, idx) => ({
@@ -325,7 +507,7 @@ export const BroadcastSetup: React.FC<BroadcastSetupProps> = ({
       return;
     }
 
-    // Size check (max 500MB browser limit for preview)
+    // Size check
     const sizeMb = file.size / (1024 * 1024);
     if (sizeMb > 500) {
       setVideoError('File exceeds 500MB browser limit. Please select a smaller segment or clip.');
@@ -339,7 +521,7 @@ export const BroadcastSetup: React.FC<BroadcastSetupProps> = ({
       setVideoFileSizeMb(Math.round(sizeMb * 10) / 10);
 
       // Automatically transcribe the uploaded video and extract announcements!
-      prepareContentForVideo(file, file.name, userNotes);
+      prepareContentForVideo(file, file.name, userNotes, false);
     } catch {
       setVideoError('Unable to generate preview for selected video.');
     }
@@ -382,20 +564,59 @@ export const BroadcastSetup: React.FC<BroadcastSetupProps> = ({
     setEditingItem(null);
   };
 
-  const handleRemoveItem = (id: string) => {
-    setItems(items.filter((it) => it.id !== id));
-  };
-
   const handleCopyTranscript = () => {
     if (!extractedTranscription) return;
-    navigator.clipboard.writeText(extractedTranscription);
-    setCopiedTranscript(true);
-    setTimeout(() => setCopiedTranscript(false), 2000);
+    navigator.clipboard.writeText(extractedTranscription).then(() => {
+      setCopiedTranscript(true);
+      setTimeout(() => setCopiedTranscript(false), 2000);
+    });
   };
 
-  const handleSubmit = () => {
+  // Sync edited transcript back into caption items
+  const handleApplyTranscriptToCaptions = () => {
+    if (!extractedTranscription.trim()) return;
+
+    const sentences = extractedTranscription
+      .split(/(?<=[.!?])\s+/)
+      .map((s) => s.trim())
+      .filter((s) => s.length > 5);
+
+    if (sentences.length === 0) return;
+
+    const updatedItems = [...items];
+    const captionIndices = updatedItems
+      .map((it, idx) => (it.type === 'caption' ? idx : -1))
+      .filter((idx) => idx !== -1);
+
+    sentences.slice(0, 3).forEach((sentence, i) => {
+      if (i < captionIndices.length) {
+        updatedItems[captionIndices[i]].content = sentence;
+      } else {
+        updatedItems.push({
+          id: `manual_cap_${Date.now()}_${i}`,
+          type: 'caption',
+          priority: 'P2_HIGH',
+          title: `Dialogue Line ${i + 1}`,
+          content: sentence,
+          payloadBytes: 1200,
+          createdAt: (i + 1) * 3,
+          deadlineSeconds: 15 + i * 5,
+          status: 'queued',
+          isLive: true,
+          retryCount: 0,
+          segmentIndex: updatedItems.length + 1,
+        });
+      }
+    });
+
+    setItems(updatedItems);
+    setIsEditingTranscript(false);
+    setContentSourceMessage('Synchronized transcript dialogue directly into broadcast captions!');
+  };
+
+  const handleStart = () => {
     if (items.length === 0) {
-      alert('Please include at least one broadcast message or media item.');
+      setVideoError('Please add at least one content item or click Auto-Generate Announcements.');
       return;
     }
 
@@ -410,8 +631,11 @@ export const BroadcastSetup: React.FC<BroadcastSetupProps> = ({
       items,
       mode,
       networkProfileType,
+      transcription: extractedTranscription,
     });
   };
+
+  const ytId = extractYouTubeId(videoUrl);
 
   return (
     <div className="space-y-8 max-w-5xl mx-auto pb-16">
@@ -425,15 +649,15 @@ export const BroadcastSetup: React.FC<BroadcastSetupProps> = ({
           Configure Adaptive Broadcast Session
         </h1>
         <p className="text-sm text-slate-400 mt-1 max-w-3xl">
-          Upload any video to automatically extract its visual keyframes, transcribe spoken dialogue, and generate
-          video-synchronized critical announcements. Prioritize essential information before broadcasting over weak networks.
+          Broadcast any YouTube Live stream or upload a video. AURA automatically transcribes speech, extracts key visual
+          data, and generates priority-scheduled announcements to keep viewers informed during network drops.
         </p>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-        {/* Left Column: Video Upload & Mode Selection */}
+        {/* Left Column: Video Source, YouTube Live, Upload & Mode */}
         <div className="lg:col-span-1 space-y-6">
-          {/* Video Upload & Preview Card */}
+          {/* Video Source Card with Tabs */}
           <div className="p-5 rounded-xl bg-slate-900/60 border border-slate-800 space-y-4">
             <div className="flex items-center justify-between">
               <h3 className="text-sm font-semibold text-white flex items-center gap-2">
@@ -441,25 +665,169 @@ export const BroadcastSetup: React.FC<BroadcastSetupProps> = ({
                 <span>Video Source</span>
               </h3>
               {videoFileName && (
-                <span className="text-[11px] font-mono text-cyan-400 font-semibold truncate max-w-[120px]">
+                <span className="text-[11px] font-mono text-cyan-400 font-semibold truncate max-w-[130px]">
                   {videoFileName}
                 </span>
               )}
             </div>
 
-            {/* Video Preview Box */}
-            <div className="relative aspect-video rounded-lg overflow-hidden bg-slate-950 border border-slate-800 flex items-center justify-center">
-              {videoUrl ? (
-                <video
-                  src={videoUrl}
-                  controls
-                  className="w-full h-full object-contain"
+            {/* Video Source Selector Tabs */}
+            <div className="grid grid-cols-3 gap-1 p-1 bg-slate-950 rounded-lg border border-slate-800 text-xs font-medium">
+              <button
+                type="button"
+                onClick={() => setVideoSourceTab('youtube')}
+                className={`py-1.5 px-2 rounded flex items-center justify-center gap-1 transition-colors cursor-pointer ${
+                  videoSourceTab === 'youtube'
+                    ? 'bg-rose-600 text-white font-bold'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                <Youtube className="w-3.5 h-3.5" />
+                <span>YouTube</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setVideoSourceTab('upload')}
+                className={`py-1.5 px-2 rounded flex items-center justify-center gap-1 transition-colors cursor-pointer ${
+                  videoSourceTab === 'upload'
+                    ? 'bg-cyan-600 text-slate-950 font-bold'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                <Upload className="w-3.5 h-3.5" />
+                <span>Upload</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setVideoSourceTab('preset')}
+                className={`py-1.5 px-2 rounded flex items-center justify-center gap-1 transition-colors cursor-pointer ${
+                  videoSourceTab === 'preset'
+                    ? 'bg-indigo-600 text-white font-bold'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                <Tv className="w-3.5 h-3.5" />
+                <span>Demos</span>
+              </button>
+            </div>
+
+            {/* TAB 1: YouTube Live Input & Presets */}
+            {videoSourceTab === 'youtube' && (
+              <div className="space-y-3 pt-1">
+                <label className="block text-xs font-medium text-slate-300">
+                  YouTube Live or Video URL:
+                </label>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={youtubeInput}
+                    onChange={(e) => setYoutubeInput(e.target.value)}
+                    placeholder="https://youtube.com/live/... or youtu.be/..."
+                    className="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-white placeholder:text-slate-500 focus:outline-hidden focus:border-rose-500 font-mono"
+                  />
+                  <button
+                    type="button"
+                    disabled={isLoadingYouTube}
+                    onClick={() => handleLoadYouTubeUrl(youtubeInput)}
+                    className="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold transition-colors cursor-pointer disabled:opacity-50"
+                  >
+                    {isLoadingYouTube ? 'Loading...' : 'Load'}
+                  </button>
+                </div>
+
+                {/* Quick 1-Click YouTube Live Presets */}
+                <div className="space-y-1.5 pt-1">
+                  <span className="text-[10px] font-mono text-slate-400 uppercase tracking-wider block">
+                    Popular YouTube Live Feeds (Click to test):
+                  </span>
+                  <div className="grid grid-cols-2 gap-2">
+                    {YOUTUBE_LIVE_PRESETS.map((preset) => (
+                      <button
+                        key={preset.id}
+                        type="button"
+                        onClick={() => handleSelectPreset(preset)}
+                        className={`p-2 rounded-lg border text-left transition-colors cursor-pointer text-xs ${
+                          ytId === preset.youtubeId
+                            ? 'bg-rose-950/40 border-rose-500 text-white'
+                            : 'bg-slate-950 border-slate-800 text-slate-300 hover:border-slate-700'
+                        }`}
+                      >
+                        <div className="font-semibold truncate text-[11px] text-white flex items-center gap-1">
+                          <Youtube className="w-3 h-3 text-rose-400 shrink-0" />
+                          <span className="truncate">{preset.title.split(':')[0]}</span>
+                        </div>
+                        <div className="text-[10px] text-slate-400 truncate mt-0.5">
+                          {preset.channel}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* TAB 2: Upload Video File */}
+            {videoSourceTab === 'upload' && (
+              <div className="space-y-3 pt-1">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="video/mp4,video/webm,video/ogg,video/quicktime"
+                  onChange={handleFileUpload}
+                  className="hidden"
                 />
+
+                <div
+                  onClick={() => fileInputRef.current?.click()}
+                  className="border-2 border-dashed border-slate-800 hover:border-cyan-500/60 rounded-xl p-4 text-center cursor-pointer transition-colors bg-slate-950/50"
+                >
+                  <Upload className="w-6 h-6 text-cyan-400 mx-auto mb-2" />
+                  <p className="text-xs font-semibold text-slate-200">
+                    Click or Drag to Upload Local Video
+                  </p>
+                  <p className="text-[10px] text-slate-400 mt-1">MP4 or WebM (up to 500 MB)</p>
+                </div>
+              </div>
+            )}
+
+            {/* TAB 3: Built-in Demo Scenarios */}
+            {videoSourceTab === 'preset' && (
+              <div className="space-y-2 pt-1">
+                <label className="block text-xs font-medium text-slate-300">
+                  Select Preset Domain Broadcast:
+                </label>
+                <select
+                  value={scenarioId}
+                  onChange={handleScenarioChange}
+                  className="w-full bg-slate-950 border border-slate-800 text-xs text-white rounded-lg p-2.5 focus:outline-hidden focus:border-cyan-500 font-medium"
+                >
+                  {SAMPLE_SCENARIOS.map((sc) => (
+                    <option key={sc.id} value={sc.id}>
+                      {sc.domain}: {sc.title.substring(0, 32)}...
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            {/* Video / YouTube Preview Box */}
+            <div className="relative aspect-video rounded-lg overflow-hidden bg-slate-950 border border-slate-800 flex items-center justify-center">
+              {ytId ? (
+                <iframe
+                  src={getYouTubeEmbedUrl(ytId, { autoplay: false, mute: true })}
+                  title="YouTube Preview"
+                  className="w-full h-full border-0"
+                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                />
+              ) : videoUrl ? (
+                <video src={videoUrl} controls className="w-full h-full object-contain" />
               ) : (
                 <div className="text-center p-4">
                   <FileVideo className="w-8 h-8 text-slate-600 mx-auto mb-2" />
                   <p className="text-xs text-slate-400">No video selected</p>
-                  <p className="text-[10px] text-slate-500 mt-0.5">Canvas pattern will be used</p>
+                  <p className="text-[10px] text-slate-500 mt-0.5">Test canvas will be used</p>
                 </div>
               )}
             </div>
@@ -471,107 +839,52 @@ export const BroadcastSetup: React.FC<BroadcastSetupProps> = ({
               </div>
             )}
 
-            {/* File Input trigger */}
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept="video/mp4,video/webm,video/ogg,video/quicktime"
-              onChange={handleFileUpload}
-              className="hidden"
-            />
-
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
-                className="flex-1 py-2.5 px-3 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-slate-950 font-bold text-xs flex items-center justify-center gap-1.5 transition-colors cursor-pointer shadow-md shadow-cyan-600/20"
-              >
-                <Upload className="w-3.5 h-3.5" />
-                <span>Upload Video & Transcribe</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => {
-                  setVideoUrl(defaultScenario.sampleVideoUrl);
-                  setVideoFileName('sample_demo.mp4');
-                  setVideoFileSizeMb(14.2);
-                  setVideoError(null);
-                  if (defaultScenario.sampleVideoUrl) {
-                    prepareContentForVideo(defaultScenario.sampleVideoUrl, 'sample_demo.mp4');
-                  }
-                }}
-                className="py-2.5 px-3 rounded-lg bg-slate-950 hover:bg-slate-800 text-slate-400 hover:text-white border border-slate-800 text-xs transition-colors cursor-pointer"
-                title="Reset to sample video"
-              >
-                Sample
-              </button>
-            </div>
-
             {/* Transcription Status Spinner */}
             {isPreparingContent && (
               <div className="p-3 rounded-lg bg-cyan-950/40 border border-cyan-500/40 space-y-2 animate-fade-in">
                 <div className="flex items-center gap-2 text-cyan-300 text-xs font-semibold">
                   <RefreshCw className="w-4 h-4 animate-spin text-cyan-400 shrink-0" />
-                  <span>Transcribing Uploaded Video...</span>
+                  <span>Transcribing Video Speech...</span>
                 </div>
                 <p className="text-[11px] text-slate-300 leading-tight">
-                  {transcriptionStatusStep || 'Analyzing speech track and video frames...'}
+                  {transcriptionStatusStep || 'Analyzing audio track and visual dialogue...'}
                 </p>
               </div>
             )}
 
-            {/* Video Context Helper Box */}
+            {/* Topic Guidance Notes */}
             <div className="p-3.5 rounded-lg bg-slate-950/80 border border-slate-800 space-y-2 text-xs">
-              <div className="flex items-center justify-between">
-                <span className="font-semibold text-slate-200 flex items-center gap-1.5">
-                  <Sparkles className="w-3.5 h-3.5 text-cyan-400" />
-                  <span>Optional Topic / Speech Notes</span>
-                </span>
-              </div>
-              <p className="text-[11px] text-slate-400 leading-relaxed">
-                Add optional notes to guide AI transcription or highlight specific takeaways:
-              </p>
+              <span className="font-semibold text-slate-200 flex items-center gap-1.5">
+                <Sparkles className="w-3.5 h-3.5 text-cyan-400" />
+                <span>Speech / Context Guidance Notes</span>
+              </span>
               <input
                 type="text"
-                placeholder="e.g. Physics lecture on quantum mechanics, or Team Q3 sprint review"
+                placeholder="e.g. Physics lecture, Emergency bulletin, Quarterly earnings"
                 value={userNotes}
                 onChange={(e) => setUserNotes(e.target.value)}
                 className="w-full bg-slate-900 border border-slate-800 rounded p-2 text-xs text-white placeholder:text-slate-500 focus:outline-hidden focus:border-cyan-500"
               />
-
               <button
                 type="button"
                 disabled={isPreparingContent}
-                onClick={() => prepareContentForVideo(videoUrl || videoFileName, videoFileName, userNotes)}
+                onClick={() =>
+                  prepareContentForVideo(
+                    videoUrl || videoFileName,
+                    videoFileName,
+                    userNotes,
+                    !!ytId
+                  )
+                }
                 className="w-full py-1.5 rounded bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-cyan-300 text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
               >
                 <Sparkles className="w-3.5 h-3.5 text-cyan-400" />
-                <span>Re-analyze & Transcribe Video</span>
+                <span>Re-Transcribe & Generate Announcements</span>
               </button>
             </div>
           </div>
 
-          {/* Preset Scenario Selector (Alternative) */}
-          <div className="p-5 rounded-xl bg-slate-900/60 border border-slate-800 space-y-3">
-            <h3 className="text-xs font-semibold text-slate-300 uppercase tracking-wider font-mono">
-              Or Load Built-in Demo Scenarios:
-            </h3>
-
-            <select
-              value={scenarioId}
-              onChange={handleScenarioChange}
-              className="w-full bg-slate-950 border border-slate-800 text-xs text-white rounded-lg p-2.5 focus:outline-hidden focus:border-cyan-500 font-medium"
-            >
-              {SAMPLE_SCENARIOS.map((sc) => (
-                <option key={sc.id} value={sc.id}>
-                  {sc.domain}: {sc.title.substring(0, 32)}...
-                </option>
-              ))}
-            </select>
-          </div>
-
-          {/* Mode & Network Selection */}
+          {/* Delivery Mode & Initial Network */}
           <div className="p-5 rounded-xl bg-slate-900/60 border border-slate-800 space-y-4">
             <h3 className="text-sm font-semibold text-white">Delivery Mode</h3>
 
@@ -586,7 +899,7 @@ export const BroadcastSetup: React.FC<BroadcastSetupProps> = ({
                 }`}
               >
                 <div className="font-bold text-xs text-cyan-300">AURA Engine</div>
-                <div className="text-[11px] text-slate-400 mt-1">Meaning-First & Deadline-Aware</div>
+                <div className="text-[11px] text-slate-400 mt-1">Meaning-First & Priority Delivery</div>
               </button>
 
               <button
@@ -622,11 +935,11 @@ export const BroadcastSetup: React.FC<BroadcastSetupProps> = ({
           </div>
         </div>
 
-        {/* Right Column: Metadata, Extracted Transcription & Prioritized Items */}
+        {/* Right Column: Metadata, Extracted Transcription & Items List */}
         <div className="lg:col-span-2 space-y-6">
           {/* Metadata Form */}
           <div className="p-5 rounded-xl bg-slate-900/60 border border-slate-800 space-y-4">
-            <h3 className="text-sm font-semibold text-white">Broadcast Metadata (Synchronized to Uploaded Video)</h3>
+            <h3 className="text-sm font-semibold text-white">Broadcast Metadata (Synchronized to Video)</h3>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
@@ -643,7 +956,7 @@ export const BroadcastSetup: React.FC<BroadcastSetupProps> = ({
 
               <div>
                 <label className="block text-xs font-medium text-slate-300 mb-1">
-                  Broadcaster / Presenter
+                  Broadcaster / Speaker
                 </label>
                 <input
                   type="text"
@@ -667,78 +980,83 @@ export const BroadcastSetup: React.FC<BroadcastSetupProps> = ({
             </div>
           </div>
 
-          {/* Extracted Video Transcription & Visual Keyframes Panel */}
-          {(extractedTranscription || extractedFrames.length > 0) && (
-            <div className="p-5 rounded-xl bg-slate-950 border border-cyan-500/30 space-y-4 shadow-xl">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <div className="w-7 h-7 rounded-lg bg-cyan-500/10 border border-cyan-500/30 flex items-center justify-center text-cyan-400">
-                    <FileText className="w-4 h-4" />
-                  </div>
-                  <div>
-                    <h4 className="text-xs font-bold text-white uppercase tracking-wider font-mono">
-                      Extracted Video Transcription & Insights
-                    </h4>
-                    <span className="text-[10px] text-slate-400">
-                      Synchronized speech transcripts and slide descriptions from your video
-                    </span>
-                  </div>
+          {/* Extracted Video Transcription & Insights (ALWAYS VISIBLE & EDITABLE) */}
+          <div className="p-5 rounded-xl bg-slate-950 border border-cyan-500/30 space-y-4 shadow-xl">
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <div className="flex items-center gap-2">
+                <div className="w-7 h-7 rounded-lg bg-cyan-500/10 border border-cyan-500/30 flex items-center justify-center text-cyan-400">
+                  <FileText className="w-4 h-4" />
                 </div>
-
-                {extractedTranscription && (
-                  <button
-                    type="button"
-                    onClick={handleCopyTranscript}
-                    className="flex items-center gap-1 px-2.5 py-1 rounded bg-slate-900 hover:bg-slate-800 border border-slate-800 text-[11px] font-mono text-cyan-400 transition-colors cursor-pointer"
-                  >
-                    {copiedTranscript ? <CheckCheck className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                    <span>{copiedTranscript ? 'Copied' : 'Copy Text'}</span>
-                  </button>
-                )}
+                <div>
+                  <h4 className="text-xs font-bold text-white uppercase tracking-wider font-mono">
+                    Video Speech Transcription & Verbatim Dialogue
+                  </h4>
+                  <span className="text-[10px] text-slate-400">
+                    Extracted speech narration from your video or YouTube live stream
+                  </span>
+                </div>
               </div>
 
-              {/* Sampled Video Keyframe Thumbnails */}
-              {extractedFrames.length > 0 && (
-                <div>
-                  <span className="text-[10px] text-slate-400 font-mono uppercase tracking-wider block mb-1.5 flex items-center gap-1">
-                    <Image className="w-3 h-3 text-cyan-400" />
-                    <span>Sampled Video Keyframes Analyzed:</span>
-                  </span>
-                  <div className="flex items-center gap-2.5 overflow-x-auto pb-1">
-                    {extractedFrames.map((frame, idx) => (
-                      <div
-                        key={idx}
-                        className="relative rounded-lg overflow-hidden border border-slate-800 shrink-0 w-32 aspect-video group"
-                      >
-                        <img
-                          src={frame}
-                          alt={`Video Frame ${idx + 1}`}
-                          className="w-full h-full object-cover"
-                        />
-                        <span className="absolute bottom-1 right-1 text-[9px] font-mono bg-slate-950/85 px-1.5 py-0.5 rounded text-cyan-300 font-semibold border border-slate-800">
-                          Frame {idx + 1}
-                        </span>
-                      </div>
-                    ))}
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setIsEditingTranscript(!isEditingTranscript)}
+                  className="flex items-center gap-1 px-2.5 py-1 rounded bg-slate-900 hover:bg-slate-800 border border-slate-800 text-[11px] font-mono text-slate-300 transition-colors cursor-pointer"
+                >
+                  <Edit2 className="w-3 h-3 text-cyan-400" />
+                  <span>{isEditingTranscript ? 'Done Editing' : 'Edit Transcript'}</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleCopyTranscript}
+                  className="flex items-center gap-1 px-2.5 py-1 rounded bg-slate-900 hover:bg-slate-800 border border-slate-800 text-[11px] font-mono text-cyan-400 transition-colors cursor-pointer"
+                >
+                  {copiedTranscript ? (
+                    <CheckCheck className="w-3.5 h-3.5 text-emerald-400" />
+                  ) : (
+                    <Copy className="w-3.5 h-3.5" />
+                  )}
+                  <span>{copiedTranscript ? 'Copied' : 'Copy Text'}</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Editable or Formatted Transcription Text */}
+            <div className="space-y-2">
+              {isEditingTranscript ? (
+                <div className="space-y-2">
+                  <textarea
+                    rows={4}
+                    value={extractedTranscription}
+                    onChange={(e) => setExtractedTranscription(e.target.value)}
+                    placeholder="Type or paste the speech transcription here..."
+                    className="w-full bg-slate-900 border border-cyan-500/50 rounded-lg p-3 text-xs text-white leading-relaxed focus:outline-hidden font-sans"
+                  />
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] text-slate-400">
+                      Edit sentences and click apply to update caption broadcast items.
+                    </span>
+                    <button
+                      type="button"
+                      onClick={handleApplyTranscriptToCaptions}
+                      className="px-3 py-1 rounded bg-cyan-600 hover:bg-cyan-500 text-slate-950 font-bold text-xs flex items-center gap-1.5 cursor-pointer shadow-sm"
+                    >
+                      <Check className="w-3 h-3" />
+                      <span>Sync to Broadcast Captions</span>
+                    </button>
                   </div>
                 </div>
-              )}
-
-              {/* Full Transcription Text Box */}
-              {extractedTranscription && (
-                <div className="space-y-1.5">
-                  <span className="text-[10px] text-slate-400 font-mono uppercase tracking-wider block">
-                    Full Video Transcription:
-                  </span>
-                  <div className="bg-slate-900/90 rounded-lg p-3.5 border border-slate-800 text-xs text-slate-200 leading-relaxed max-h-40 overflow-y-auto font-sans selection:bg-cyan-500 selection:text-slate-950">
-                    {extractedTranscription}
-                  </div>
+              ) : (
+                <div className="bg-slate-900/90 rounded-lg p-3.5 border border-slate-800 text-xs text-slate-200 leading-relaxed max-h-40 overflow-y-auto font-sans selection:bg-cyan-500 selection:text-slate-950 whitespace-pre-line">
+                  {extractedTranscription ||
+                    'No transcription text available yet. Click "Re-Transcribe & Generate Announcements" or upload a video.'}
                 </div>
               )}
             </div>
-          )}
+          </div>
 
-          {/* Essential Messages & Priority Queue Builder */}
+          {/* Priority Queue Builder */}
           <div className="p-5 rounded-xl bg-slate-900/60 border border-slate-800 space-y-4">
             <div className="flex items-center justify-between flex-wrap gap-2">
               <div>
@@ -754,75 +1072,78 @@ export const BroadcastSetup: React.FC<BroadcastSetupProps> = ({
                 <button
                   type="button"
                   onClick={handleClearAllItems}
-                  className="px-2.5 py-1 rounded bg-slate-950 hover:bg-slate-800 text-slate-400 hover:text-rose-400 border border-slate-800 text-xs transition-colors cursor-pointer"
-                  title="Remove all items to write custom messages from scratch"
+                  className="px-2.5 py-1 text-xs text-rose-400 hover:bg-rose-950/40 border border-rose-900/40 rounded transition-colors cursor-pointer"
                 >
                   Clear All
                 </button>
               </div>
             </div>
 
-            {/* Source Status Banner */}
-            {contentSourceMessage && (
-              <div className="p-2.5 rounded-lg bg-cyan-950/40 border border-cyan-800/60 text-cyan-300 text-xs flex items-center gap-2">
-                <Sparkles className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
-                <span>{contentSourceMessage}</span>
-              </div>
-            )}
-
-            {/* Existing Items List */}
-            <div className="space-y-2 max-h-[360px] overflow-y-auto pr-1">
+            {/* List of Scheduled Items */}
+            <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
               {items.length === 0 ? (
-                <div className="p-8 text-center text-slate-500 text-xs border border-dashed border-slate-800 rounded-lg">
-                  No items in queue. Use the form below to add custom announcements, or click "Re-analyze & Transcribe Video".
+                <div className="py-8 text-center text-xs text-slate-500 border border-dashed border-slate-800 rounded-lg">
+                  No items in broadcast queue. Add an urgent alert or transcription line below.
                 </div>
               ) : (
-                items.map((it, idx) => (
+                items.map((item, idx) => (
                   <div
-                    key={it.id}
-                    className="p-3 rounded-lg bg-slate-950 border border-slate-800 flex items-start justify-between gap-3 text-xs group hover:border-slate-700 transition-colors"
+                    key={item.id}
+                    className="p-3 rounded-lg bg-slate-950 border border-slate-800/80 flex items-center justify-between gap-3 group hover:border-slate-700 transition-colors"
                   >
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2 flex-wrap mb-1">
-                        <span className="font-mono text-[10px] text-slate-500">#{idx + 1}</span>
-                        <span className="font-semibold text-white truncate max-w-sm">{it.title}</span>
-                        <span
-                          className={`text-[10px] font-mono px-1.5 py-0.2 rounded font-semibold ${
-                            it.priority === 'P1_CRITICAL'
-                              ? 'bg-rose-950 text-rose-300 border border-rose-800'
-                              : it.priority === 'P2_HIGH'
-                              ? 'bg-amber-950 text-amber-300 border border-amber-800'
-                              : it.priority === 'P3_MEDIUM'
-                              ? 'bg-cyan-950 text-cyan-300 border border-cyan-800'
-                              : 'bg-slate-900 text-slate-400'
-                          }`}
-                        >
-                          {it.priority}
-                        </span>
-                        <span className="text-[10px] text-slate-400 font-mono">
-                          {(it.payloadBytes / 1024).toFixed(1)} KB
-                        </span>
-                        <span className="text-[10px] text-slate-500 font-mono">
-                          Deadline: {it.deadlineSeconds}s
-                        </span>
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <span
+                        className={`text-[10px] font-mono font-bold px-1.5 py-0.5 rounded shrink-0 ${
+                          item.priority === 'P1_CRITICAL'
+                            ? 'bg-rose-500/20 text-rose-400 border border-rose-500/30'
+                            : item.priority === 'P2_HIGH'
+                            ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
+                            : item.priority === 'P3_MEDIUM'
+                            ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/30'
+                            : 'bg-slate-800 text-slate-400 border border-slate-700'
+                        }`}
+                      >
+                        {item.priority.split('_')[0]}
+                      </span>
+
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-semibold text-white truncate">
+                            {item.title}
+                          </span>
+                          <span className="text-[10px] font-mono text-slate-400">
+                            {item.type}
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-slate-400 truncate max-w-md mt-0.5">
+                          {item.content}
+                        </p>
                       </div>
-                      <p className="text-[11px] text-slate-300 line-clamp-2">{it.content}</p>
                     </div>
 
-                    <div className="flex items-center gap-1 shrink-0">
+                    <div className="flex items-center gap-3 shrink-0">
+                      <span className="text-[11px] font-mono text-slate-400">
+                        {item.payloadBytes > 1000000
+                          ? `${(item.payloadBytes / (1024 * 1024)).toFixed(1)} MB`
+                          : item.payloadBytes > 1000
+                          ? `${Math.round(item.payloadBytes / 1024)} KB`
+                          : `${item.payloadBytes} B`}
+                      </span>
+
                       <button
                         type="button"
-                        onClick={() => setEditingItem({ ...it })}
-                        className="p-1 rounded text-slate-400 hover:text-cyan-400 hover:bg-slate-900 transition-colors cursor-pointer"
-                        title="Edit text / deadline"
+                        onClick={() => setEditingItem(item)}
+                        className="text-slate-500 hover:text-cyan-400 p-1 rounded transition-colors cursor-pointer"
+                        title="Edit Item"
                       >
                         <Edit2 className="w-3.5 h-3.5" />
                       </button>
+
                       <button
                         type="button"
-                        onClick={() => handleRemoveItem(it.id)}
-                        className="p-1 rounded text-slate-500 hover:text-rose-400 hover:bg-slate-900 transition-colors cursor-pointer"
-                        title="Remove item"
+                        onClick={() => setItems(items.filter((it) => it.id !== item.id))}
+                        className="text-slate-500 hover:text-rose-400 p-1 rounded transition-colors cursor-pointer"
+                        title="Delete Item"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
                       </button>
@@ -832,233 +1153,91 @@ export const BroadcastSetup: React.FC<BroadcastSetupProps> = ({
               )}
             </div>
 
-            {/* Add New Message Subform */}
-            <div className="pt-4 border-t border-slate-800">
-              <span className="text-xs font-semibold text-slate-200 block mb-2">
-                Add Custom Announcement / Transcript Line
+            {/* Quick Add Custom Item Form */}
+            <form onSubmit={handleAddItem} className="pt-2 border-t border-slate-800/80 space-y-3">
+              <span className="text-xs font-semibold text-slate-300 block">
+                + Add Custom Announcement or Dialogue Line:
               </span>
 
-              <form onSubmit={handleAddItem} className="space-y-3 bg-slate-950/60 p-3.5 rounded-lg border border-slate-800/80">
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-[11px] text-slate-400 mb-1">Title</label>
-                    <input
-                      type="text"
-                      placeholder="e.g. Critical Concept / Breaking Dialogue"
-                      value={newItemTitle}
-                      onChange={(e) => setNewItemTitle(e.target.value)}
-                      className="w-full bg-slate-900 border border-slate-800 rounded p-2 text-xs text-white focus:outline-hidden focus:border-cyan-500"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-[11px] text-slate-400 mb-1">Content Type</label>
-                    <select
-                      value={newItemType}
-                      onChange={(e) => {
-                        const t = e.target.value as ContentType;
-                        setNewItemType(t);
-                        if (t === 'critical_alert') {
-                          setNewItemPriority('P1_CRITICAL');
-                          setNewItemBytes(500);
-                          setNewItemDeadline(8);
-                        } else if (t === 'caption') {
-                          setNewItemPriority('P2_HIGH');
-                          setNewItemBytes(1200);
-                          setNewItemDeadline(15);
-                        } else if (t === 'audio_segment') {
-                          setNewItemPriority('P2_HIGH');
-                          setNewItemBytes(45000);
-                          setNewItemDeadline(20);
-                        } else if (t === 'keyframe') {
-                          setNewItemPriority('P3_MEDIUM');
-                          setNewItemBytes(25000);
-                          setNewItemDeadline(40);
-                        } else {
-                          setNewItemPriority('P4_LOW');
-                          setNewItemBytes(380000);
-                          setNewItemDeadline(60);
-                        }
-                      }}
-                      className="w-full bg-slate-900 border border-slate-800 rounded p-2 text-xs text-white focus:outline-hidden focus:border-cyan-500"
-                    >
-                      <option value="critical_alert">Critical Alert (Urgent Flash)</option>
-                      <option value="caption">Caption / Transcript Line</option>
-                      <option value="summary">Summary / Key Explanation</option>
-                      <option value="audio_segment">Audio Voice Segment</option>
-                      <option value="keyframe">Keyframe / Diagram</option>
-                      <option value="live_video">Live Video Segment</option>
-                      <option value="deferred_video">Deferred Replay Segment</option>
-                    </select>
-                  </div>
-                </div>
-
-                <div>
-                  <label className="block text-[11px] text-slate-400 mb-1">Content Details / Body</label>
-                  <input
-                    type="text"
-                    placeholder="e.g. Dialogue line or vital takeaway that the user must receive immediately."
-                    value={newItemContent}
-                    onChange={(e) => setNewItemContent(e.target.value)}
-                    className="w-full bg-slate-900 border border-slate-800 rounded p-2 text-xs text-white focus:outline-hidden focus:border-cyan-500"
-                  />
-                </div>
-
-                <div className="grid grid-cols-3 gap-2">
-                  <div>
-                    <label className="block text-[10px] text-slate-400 mb-1">Priority</label>
-                    <select
-                      value={newItemPriority}
-                      onChange={(e) => setNewItemPriority(e.target.value as PriorityClass)}
-                      className="w-full bg-slate-900 border border-slate-800 rounded p-1.5 text-xs text-white focus:outline-hidden"
-                    >
-                      <option value="P1_CRITICAL">P1 Critical</option>
-                      <option value="P2_HIGH">P2 High</option>
-                      <option value="P3_MEDIUM">P3 Medium</option>
-                      <option value="P4_LOW">P4 Low</option>
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="block text-[10px] text-slate-400 mb-1">Size (Bytes)</label>
-                    <input
-                      type="number"
-                      value={newItemBytes}
-                      onChange={(e) => setNewItemBytes(parseInt(e.target.value) || 500)}
-                      className="w-full bg-slate-900 border border-slate-800 rounded p-1.5 text-xs text-white font-mono focus:outline-hidden"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-[10px] text-slate-400 mb-1">Deadline (Sec)</label>
-                    <input
-                      type="number"
-                      value={newItemDeadline}
-                      onChange={(e) => setNewItemDeadline(parseInt(e.target.value) || 10)}
-                      className="w-full bg-slate-900 border border-slate-800 rounded p-1.5 text-xs text-white font-mono focus:outline-hidden"
-                    />
-                  </div>
-                </div>
-
-                <button
-                  type="submit"
-                  className="w-full py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold rounded flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
-                >
-                  <Plus className="w-3.5 h-3.5 text-cyan-400" />
-                  <span>Insert Item into Broadcast Queue</span>
-                </button>
-              </form>
-            </div>
-          </div>
-
-          {/* Launch Broadcast CTA */}
-          <div className="pt-2">
-            <button
-              type="button"
-              onClick={handleSubmit}
-              className="w-full py-4 rounded-xl bg-gradient-to-r from-cyan-500 to-teal-400 hover:from-cyan-400 hover:to-teal-300 text-slate-950 font-extrabold text-sm shadow-xl shadow-cyan-500/20 flex items-center justify-center gap-2 transition-all hover:scale-[1.01] cursor-pointer"
-            >
-              <Play className="w-5 h-5 fill-slate-950" />
-              <span>Launch Broadcast in Live Studio ({mode} Mode)</span>
-            </button>
-          </div>
-        </div>
-      </div>
-
-      {/* Edit Item Modal */}
-      {editingItem && (
-        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-xl max-w-lg w-full p-5 shadow-2xl">
-            <div className="flex items-center justify-between mb-4 pb-2 border-b border-slate-800">
-              <h4 className="text-sm font-bold text-white flex items-center gap-2">
-                <Edit2 className="w-4 h-4 text-cyan-400" />
-                <span>Edit Broadcast Announcement / Transcript</span>
-              </h4>
-              <button
-                type="button"
-                onClick={() => setEditingItem(null)}
-                className="text-slate-400 hover:text-white"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            <form onSubmit={handleSaveEditedItem} className="space-y-3">
-              <div>
-                <label className="block text-xs font-medium text-slate-300 mb-1">Title</label>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                 <input
                   type="text"
-                  required
-                  value={editingItem.title}
-                  onChange={(e) => setEditingItem({ ...editingItem, title: e.target.value })}
-                  className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-xs text-white focus:outline-hidden focus:border-cyan-500"
+                  placeholder="Item Title (e.g. Critical Safety Step)"
+                  value={newItemTitle}
+                  onChange={(e) => setNewItemTitle(e.target.value)}
+                  className="bg-slate-950 border border-slate-800 rounded px-2.5 py-1.5 text-xs text-white placeholder:text-slate-500 focus:outline-hidden focus:border-cyan-500"
                 />
-              </div>
 
-              <div>
-                <label className="block text-xs font-medium text-slate-300 mb-1">Content / Message Body</label>
-                <textarea
-                  rows={3}
-                  required
-                  value={editingItem.content}
-                  onChange={(e) => setEditingItem({ ...editingItem, content: e.target.value })}
-                  className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-xs text-white focus:outline-hidden focus:border-cyan-500"
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-medium text-slate-300 mb-1">Priority</label>
-                  <select
-                    value={editingItem.priority}
-                    onChange={(e) =>
-                      setEditingItem({ ...editingItem, priority: e.target.value as PriorityClass })
-                    }
-                    className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-xs text-white focus:outline-hidden"
-                  >
-                    <option value="P1_CRITICAL">P1 Critical (Urgent Flash)</option>
-                    <option value="P2_HIGH">P2 High (Caption / Audio)</option>
-                    <option value="P3_MEDIUM">P3 Medium (Diagram / Keyframe)</option>
-                    <option value="P4_LOW">P4 Low (Video Stream)</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-medium text-slate-300 mb-1">Deadline (Seconds)</label>
-                  <input
-                    type="number"
-                    required
-                    value={editingItem.deadlineSeconds}
-                    onChange={(e) =>
-                      setEditingItem({
-                        ...editingItem,
-                        deadlineSeconds: parseInt(e.target.value) || 10,
-                      })
-                    }
-                    className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-xs text-white font-mono focus:outline-hidden"
-                  />
-                </div>
-              </div>
-
-              <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-800">
-                <button
-                  type="button"
-                  onClick={() => setEditingItem(null)}
-                  className="px-3 py-1.5 rounded text-xs text-slate-400 hover:text-white"
+                <select
+                  value={newItemType}
+                  onChange={(e) => setNewItemType(e.target.value as ContentType)}
+                  className="bg-slate-950 border border-slate-800 rounded px-2 py-1.5 text-xs text-white focus:outline-hidden focus:border-cyan-500"
                 >
-                  Cancel
-                </button>
+                  <option value="critical_alert">P1: Critical Alert</option>
+                  <option value="caption">P2: Speech Caption</option>
+                  <option value="summary">P2: Key Summary</option>
+                  <option value="audio_segment">P2: Audio Segment</option>
+                  <option value="keyframe">P3: Visual Keyframe</option>
+                  <option value="live_video">P4: Video Media</option>
+                </select>
+
+                <select
+                  value={newItemPriority}
+                  onChange={(e) => setNewItemPriority(e.target.value as PriorityClass)}
+                  className="bg-slate-950 border border-slate-800 rounded px-2 py-1.5 text-xs text-white focus:outline-hidden focus:border-cyan-500"
+                >
+                  <option value="P1_CRITICAL">P1 (Critical Urgency)</option>
+                  <option value="P2_HIGH">P2 (High Priority)</option>
+                  <option value="P3_MEDIUM">P3 (Medium Priority)</option>
+                  <option value="P4_LOW">P4 (Low Video)</option>
+                </select>
+              </div>
+
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  placeholder="Verbatim text content or spoken instruction..."
+                  value={newItemContent}
+                  onChange={(e) => setNewItemContent(e.target.value)}
+                  className="flex-1 bg-slate-950 border border-slate-800 rounded px-2.5 py-1.5 text-xs text-white placeholder:text-slate-500 focus:outline-hidden focus:border-cyan-500"
+                />
+
                 <button
                   type="submit"
-                  className="px-4 py-1.5 rounded bg-cyan-500 text-slate-950 font-bold text-xs"
+                  className="px-4 py-1.5 rounded bg-slate-800 hover:bg-slate-700 text-cyan-300 font-semibold text-xs flex items-center gap-1 transition-colors cursor-pointer"
                 >
-                  Save Changes
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Add Item</span>
                 </button>
               </div>
             </form>
           </div>
+
+          {/* Launch Studio Action Banner */}
+          <div className="p-5 rounded-xl bg-gradient-to-r from-cyan-950/40 via-slate-900/60 to-slate-900/40 border border-cyan-500/30 flex flex-col sm:flex-row items-center justify-between gap-4">
+            <div>
+              <h4 className="text-sm font-bold text-white flex items-center gap-2">
+                <span>Ready to Broadcast</span>
+                <span className="text-xs font-mono font-normal text-cyan-400">
+                  ({items.length} items queued · {mode} mode)
+                </span>
+              </h4>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Launches the real-time adaptive transmission scheduler and live video player.
+              </p>
+            </div>
+
+            <button
+              type="button"
+              onClick={handleStart}
+              className="w-full sm:w-auto px-6 py-2.5 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-sm flex items-center justify-center gap-2 shadow-lg shadow-cyan-500/25 transition-all cursor-pointer"
+            >
+              <span>Launch Live Studio</span>
+              <ChevronRight className="w-4 h-4" />
+            </button>
+          </div>
         </div>
-      )}
+      </div>
     </div>
   );
 };

@@ -10,8 +10,11 @@ import {
   Radio,
   Activity,
   Layers,
+  MessageSquare,
+  Tv,
 } from 'lucide-react';
 import { BroadcastMode } from '../../types/scheduler';
+import { extractYouTubeId, getYouTubeEmbedUrl } from '../../services/youtubeHelper';
 
 interface VideoPlayerProps {
   videoUrl?: string;
@@ -46,12 +49,16 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   const [currentTime, setCurrentTime] = useState<number>(0);
   const [duration, setDuration] = useState<number>(45);
   const [playbackRate, setPlaybackRate] = useState<number>(1.0);
-  const [useCanvasPattern, setUseCanvasPattern] = useState<boolean>(!videoUrl);
+  const [showCaptions, setShowCaptions] = useState<boolean>(true);
+
+  const youtubeId = extractYouTubeId(videoUrl);
+  const isYouTube = !!youtubeId;
+  const [useCanvasPattern, setUseCanvasPattern] = useState<boolean>(!videoUrl && !isYouTube);
 
   // Sync canvas pattern if videoUrl is unavailable or fails
   useEffect(() => {
-    setUseCanvasPattern(!videoUrl);
-  }, [videoUrl]);
+    setUseCanvasPattern(!videoUrl && !isYouTube);
+  }, [videoUrl, isYouTube]);
 
   // Handle stall / freeze from scheduler
   useEffect(() => {
@@ -271,8 +278,8 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         </div>
       </div>
 
-      {/* Main Video Screen / Canvas Generator */}
-      <div className="relative aspect-video w-full bg-slate-950 flex items-center justify-center">
+      {/* Main Video Screen / YouTube Embed / Canvas Generator */}
+      <div className="relative aspect-video w-full bg-slate-950 flex items-center justify-center overflow-hidden">
         {useCanvasPattern ? (
           <canvas
             ref={canvasRef}
@@ -280,6 +287,16 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
             height={540}
             className="w-full h-full object-contain"
           />
+        ) : isYouTube && youtubeId ? (
+          <div className="w-full h-full relative bg-black">
+            <iframe
+              src={getYouTubeEmbedUrl(youtubeId, { autoplay: isPlaying, mute: isMuted })}
+              title="YouTube Live Broadcast Stream"
+              className="w-full h-full border-0 absolute inset-0"
+              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+              allowFullScreen
+            />
+          </div>
         ) : (
           <video
             ref={videoRef}
@@ -303,7 +320,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
         {/* Buffering Stall Overlay (Triggered by scheduler) */}
         {isStalled && (
-          <div className="absolute inset-0 z-30 bg-slate-950/80 backdrop-blur-xs flex flex-col items-center justify-center p-6 text-center animate-fade-in">
+          <div className="absolute inset-0 z-30 bg-slate-950/85 backdrop-blur-xs flex flex-col items-center justify-center p-6 text-center animate-fade-in">
             <div className="w-14 h-14 rounded-full bg-rose-500/10 border border-rose-500/30 flex items-center justify-center text-rose-400 mb-3 animate-spin">
               <RotateCcw className="w-7 h-7" />
             </div>
@@ -327,10 +344,10 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         )}
 
         {/* Synchronized Transcript Subtitle Overlay */}
-        {activeSubtitle && (
+        {showCaptions && activeSubtitle && (
           <div className="absolute bottom-3 inset-x-4 z-20 flex justify-center pointer-events-none">
-            <div className="bg-slate-950/90 backdrop-blur-xs text-white px-3.5 py-1.5 rounded-lg border border-cyan-500/40 text-xs sm:text-sm font-medium max-w-xl text-center shadow-2xl animate-fade-in">
-              <span className="text-cyan-400 font-mono text-[10px] font-bold mr-1.5">[TRANSCRIPT]</span>
+            <div className="bg-slate-950/95 backdrop-blur-md text-white px-4 py-2 rounded-lg border border-cyan-500/60 text-xs sm:text-sm font-medium max-w-xl text-center shadow-2xl animate-fade-in">
+              <span className="text-cyan-400 font-mono text-[10px] font-bold mr-2 tracking-wider">[LIVE TRANSCRIPT]</span>
               <span>{activeSubtitle}</span>
             </div>
           </div>
@@ -430,10 +447,24 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
               ))}
             </div>
 
+            {/* Closed Captions CC Toggle */}
+            <button
+              type="button"
+              onClick={() => setShowCaptions(!showCaptions)}
+              className={`px-2 h-8 rounded-lg font-mono text-xs font-bold transition-colors cursor-pointer border ${
+                showCaptions
+                  ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/50'
+                  : 'bg-slate-800 text-slate-500 border-slate-700 hover:text-slate-300'
+              }`}
+              title={showCaptions ? 'Subtitles / Captions ON' : 'Subtitles / Captions OFF'}
+            >
+              CC
+            </button>
+
             <button
               type="button"
               onClick={handleFullscreen}
-              className="w-8 h-8 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white flex items-center justify-center transition-colors"
+              className="w-8 h-8 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white flex items-center justify-center transition-colors cursor-pointer"
               title="Fullscreen"
             >
               <Maximize2 className="w-4 h-4" />

@@ -27,6 +27,7 @@ import { PriorityQueueView } from '../studio/PriorityQueueView';
 import { CriticalAlertsPanel } from '../studio/CriticalAlertsPanel';
 import { NetworkHud } from '../studio/NetworkHud';
 import { LiveEventLog } from '../studio/LiveEventLog';
+import { LiveTranscriptFeed } from '../studio/LiveTranscriptFeed';
 import { saveReportToStorage } from '../../services/reportStorage';
 import { PageId } from '../layout/Navbar';
 
@@ -37,6 +38,7 @@ interface LiveBroadcastStudioProps {
   videoUrl?: string;
   initialMode: BroadcastMode;
   initialNetwork: NetworkProfile;
+  transcription?: string;
   onNavigate: (page: PageId) => void;
   onSaveReport: (report: TestSessionReport) => void;
 }
@@ -48,6 +50,7 @@ export const LiveBroadcastStudio: React.FC<LiveBroadcastStudioProps> = ({
   videoUrl,
   initialMode,
   initialNetwork,
+  transcription,
   onNavigate,
   onSaveReport,
 }) => {
@@ -353,6 +356,14 @@ export const LiveBroadcastStudio: React.FC<LiveBroadcastStudioProps> = ({
             deliveredItems={delivered}
             onInjectMessage={handleInjectMessage}
             timelineSeconds={timelineSeconds}
+          />
+
+          {/* Live Video Transcription & Dialogue Stream */}
+          <LiveTranscriptFeed
+            fullTranscription={transcription}
+            deliveredItems={delivered}
+            activeItem={activeItem}
+            videoTitle={scenarioTitle}
           />
 
           {/* Dynamic Priority Queue */}
