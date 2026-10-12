@@ -1,0 +1,6 @@
+{
+  "name": "AURA - Meaning-First Adaptive Broadcasting",
+  "description": "Intelligent broadcasting framework that prioritizes essential messages, audio, and vital media over constrained networks, outperforming conventional streaming under severe bandwidth drops.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
