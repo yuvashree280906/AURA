@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   Upload,
   Video,
@@ -25,6 +25,10 @@ import {
   Youtube,
   ExternalLink,
   ChevronRight,
+  Camera,
+  Download,
+  Eye,
+  Maximize2,
 } from 'lucide-react';
 import {
   BroadcastMode,
@@ -35,7 +39,14 @@ import {
   PriorityClass,
 } from '../../types/scheduler';
 import { NETWORK_PROFILES, SAMPLE_SCENARIOS } from '../../services/sampleScenarios';
-import { extractVideoKeyframes } from '../../services/videoMediaExtractor';
+import {
+  extractVideoKeyframes,
+  captureFrameFromMediaElement,
+  getYouTubeSnapshots,
+  generateSyntheticSnapshot,
+  createLiveStreamKeyframe,
+  VideoSnapshot,
+} from '../../services/videoMediaExtractor';
 import {
   extractYouTubeId,
   fetchYouTubeOEmbed,
@@ -104,11 +115,41 @@ export const BroadcastSetup: React.FC<BroadcastSetupProps> = ({
   const [copiedTranscript, setCopiedTranscript] = useState<boolean>(false);
   const [isEditingTranscript, setIsEditingTranscript] = useState<boolean>(false);
 
+  // Video Snapshots (Tier 3 Media Keyframes)
+  const [snapshots, setSnapshots] = useState<VideoSnapshot[]>([
+    {
+      id: 'snap_init_1',
+      dataUrl: 'https://img.youtube.com/vi/21X5lGlDOfg/hqdefault.jpg',
+      timestampSeconds: 0,
+      label: 'Broadcast Keyframe (HQ)',
+      width: 480,
+      height: 360,
+    },
+    {
+      id: 'snap_init_2',
+      dataUrl: 'https://img.youtube.com/vi/21X5lGlDOfg/mqdefault.jpg',
+      timestampSeconds: 15,
+      label: 'Telemetry & Orbit Snapshot',
+      width: 320,
+      height: 180,
+    },
+    {
+      id: 'snap_init_3',
+      dataUrl: generateSyntheticSnapshot('Solar Array Tracking Telemetry', 30, 'Key visual slide and presentation summary'),
+      timestampSeconds: 30,
+      label: 'Solar Array Diagram Keyframe',
+      width: 640,
+      height: 360,
+    },
+  ]);
+  const [activeSnapshotModal, setActiveSnapshotModal] = useState<VideoSnapshot | null>(null);
+  const previewVideoRef = useRef<HTMLVideoElement>(null);
+
   // User notes & video context
   const [userNotes, setUserNotes] = useState<string>('');
   const [isPreparingContent, setIsPreparingContent] = useState<boolean>(false);
   const [contentSourceMessage, setContentSourceMessage] = useState<string | null>(
-    'Loaded NASA Live Space Station Stream with synchronized audio captions and orbital telemetry alert.'
+    'Loaded NASA Live Space Station Stream with synchronized audio captions, orbital telemetry alert, and visual keyframe snapshots.'
   );
 
   // Content items list
@@ -118,6 +159,10 @@ export const BroadcastSetup: React.FC<BroadcastSetupProps> = ({
       status: 'queued',
       retryCount: 0,
       segmentIndex: idx + 1,
+      snapshotUrl:
+        it.type === 'keyframe'
+          ? 'https://img.youtube.com/vi/21X5lGlDOfg/hqdefault.jpg'
+          : it.snapshotUrl,
     }))
   );
 
@@ -131,6 +176,79 @@ export const BroadcastSetup: React.FC<BroadcastSetupProps> = ({
   const [newItemPriority, setNewItemPriority] = useState<PriorityClass>('P1_CRITICAL');
   const [newItemBytes, setNewItemBytes] = useState<number>(650);
   const [newItemDeadline, setNewItemDeadline] = useState<number>(8);
+  const [autoCapturePreview, setAutoCapturePreview] = useState<boolean>(false);
+
+  useEffect(() => {
+    if (!autoCapturePreview) return;
+    const interval = setInterval(() => {
+      handleCapturePreviewSnapshot();
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [autoCapturePreview, videoUrl, videoFileName, title]);
+
+  const handleCapturePreviewSnapshot = () => {
+    if (previewVideoRef.current) {
+      const snap = captureFrameFromMediaElement(previewVideoRef.current, videoFileName || 'Preview Frame Keyframe');
+      if (snap) {
+        setSnapshots((prev) => [snap, ...prev]);
+        setContentSourceMessage(`Captured live snapshot from video at T+${Math.round(snap.timestampSeconds)}s!`);
+        return;
+      }
+    }
+
+    const currentYtId = extractYouTubeId(videoUrl);
+    if (currentYtId) {
+      const nowSecs = Math.floor((Date.now() / 1000) % 3600);
+      const snap: VideoSnapshot = {
+        id: `snap_${Date.now()}`,
+        dataUrl: createLiveStreamKeyframe(
+          currentYtId,
+          title || 'YouTube Live Broadcast',
+          nowSecs,
+          'Instant live stream keyframe captured from active broadcast'
+        ),
+        timestampSeconds: nowSecs,
+        label: `Live Stream Keyframe (T+${Math.round(nowSecs)}s)`,
+        width: 640,
+        height: 360,
+      };
+      setSnapshots((prev) => [snap, ...prev]);
+      setContentSourceMessage(`Captured YouTube live stream keyframe at T+${Math.round(nowSecs)}s!`);
+      return;
+    }
+
+    const syn = generateSyntheticSnapshot(videoFileName || 'Broadcast Video', 12, 'Live preview frame snapshot');
+    const snap: VideoSnapshot = {
+      id: `snap_${Date.now()}`,
+      dataUrl: syn,
+      timestampSeconds: 12,
+      label: `Keyframe Snapshot (${videoFileName || 'Broadcast'})`,
+      width: 640,
+      height: 360,
+    };
+    setSnapshots((prev) => [snap, ...prev]);
+    setContentSourceMessage('Captured visual keyframe snapshot!');
+  };
+
+  const handleQueueSnapshot = (snap: VideoSnapshot) => {
+    const newItem: ContentItem = {
+      id: `snap_item_${Date.now()}`,
+      type: 'keyframe',
+      priority: 'P3_MEDIUM',
+      title: snap.label,
+      content: `Visual keyframe snapshot from ${videoFileName || 'video'} preserved for bandwidth-degraded streaming.`,
+      payloadBytes: 19500,
+      createdAt: items.length * 2,
+      deadlineSeconds: 30,
+      status: 'queued',
+      isLive: true,
+      retryCount: 0,
+      segmentIndex: items.length + 1,
+      snapshotUrl: snap.dataUrl,
+    };
+    setItems((prev) => [...prev, newItem]);
+    setContentSourceMessage(`Added snapshot "${snap.label}" into Tier 3 Priority Queue.`);
+  };
 
   /**
    * Generates video-specific announcements, captions, and transcripts
@@ -153,11 +271,44 @@ export const BroadcastSetup: React.FC<BroadcastSetupProps> = ({
     let videoDuration = 45;
 
     try {
-      // Step 1: If file, extract keyframes
+      // Step 1: Extract keyframe snapshots from video or YouTube
       if (!isYouTubeStream && typeof fileOrUrl !== 'string') {
-        const extracted = await extractVideoKeyframes(fileOrUrl, 3);
+        const extracted = await extractVideoKeyframes(fileOrUrl, 3, fileName);
         sampledFrames = extracted.frames;
         videoDuration = extracted.durationSeconds || 45;
+        setExtractedFrames(sampledFrames);
+        if (extracted.snapshots.length > 0) {
+          setSnapshots(extracted.snapshots);
+        }
+      } else if (isYouTubeStream && typeof fileOrUrl === 'string') {
+        const ytId = extractYouTubeId(fileOrUrl);
+        if (ytId) {
+          const ytSnaps = getYouTubeSnapshots(ytId, fileName);
+          setSnapshots(ytSnaps);
+          sampledFrames = ytSnaps.map((s) => s.dataUrl);
+          setExtractedFrames(sampledFrames);
+        }
+      } else {
+        const synSnaps = [
+          {
+            id: `snap_${Date.now()}_1`,
+            dataUrl: generateSyntheticSnapshot(fileName, 5, 'Overview Keyframe'),
+            timestampSeconds: 5,
+            label: 'Overview Keyframe',
+            width: 640,
+            height: 360,
+          },
+          {
+            id: `snap_${Date.now()}_2`,
+            dataUrl: generateSyntheticSnapshot(fileName, 20, 'Diagram & Telemetry'),
+            timestampSeconds: 20,
+            label: 'Diagram & Telemetry',
+            width: 640,
+            height: 360,
+          },
+        ];
+        setSnapshots(synSnaps);
+        sampledFrames = synSnaps.map((s) => s.dataUrl);
         setExtractedFrames(sampledFrames);
       }
 
@@ -193,24 +344,30 @@ export const BroadcastSetup: React.FC<BroadcastSetupProps> = ({
         }
 
         if (Array.isArray(prep.items) && prep.items.length > 0) {
-          const formattedItems: ContentItem[] = prep.items.map((it: any, idx: number) => ({
-            id: it.id || `gen_item_${Date.now()}_${idx}`,
-            type: it.type || 'caption',
-            priority: it.priority || 'P2_HIGH',
-            title: it.title || `Item ${idx + 1}`,
-            content: it.content || '',
-            payloadBytes: it.payloadBytes || 1200,
-            createdAt: idx * 2,
-            deadlineSeconds: it.deadlineSeconds || 15,
-            status: 'queued',
-            isLive: true,
-            retryCount: 0,
-            segmentIndex: idx + 1,
-          }));
+          const formattedItems: ContentItem[] = prep.items.map((it: any, idx: number) => {
+            const isKeyframe = it.type === 'keyframe';
+            return {
+              id: it.id || `gen_item_${Date.now()}_${idx}`,
+              type: it.type || 'caption',
+              priority: it.priority || 'P2_HIGH',
+              title: it.title || `Item ${idx + 1}`,
+              content: it.content || '',
+              payloadBytes: it.payloadBytes || (isKeyframe ? 19000 : 1200),
+              createdAt: idx * 2,
+              deadlineSeconds: it.deadlineSeconds || 15,
+              status: 'queued',
+              isLive: true,
+              retryCount: 0,
+              segmentIndex: idx + 1,
+              snapshotUrl: isKeyframe
+                ? it.snapshotUrl || sampledFrames[0] || (snapshots[0]?.dataUrl)
+                : undefined,
+            };
+          });
 
           setItems(formattedItems);
           setContentSourceMessage(
-            `Synchronized! Speech transcribed and ${formattedItems.length} announcements generated for "${fileName}".`
+            `Synchronized! Speech transcribed, visual snapshots captured, and ${formattedItems.length} announcements generated for "${fileName}".`
           );
         }
       }
@@ -271,6 +428,21 @@ export const BroadcastSetup: React.FC<BroadcastSetupProps> = ({
           segmentIndex: 3,
         },
         {
+          id: `item_snap_${Date.now()}`,
+          type: 'keyframe',
+          priority: 'P3_MEDIUM',
+          title: `Keyframe Snapshot: ${cleanName}`,
+          content: `Visual keyframe snapshot from ${cleanName} preserved for Tier 3 media fallback when video stalls.`,
+          payloadBytes: 19500,
+          createdAt: 4,
+          deadlineSeconds: 35,
+          status: 'queued',
+          isLive: true,
+          retryCount: 0,
+          segmentIndex: 4,
+          snapshotUrl: sampledFrames[0] || (snapshots[0]?.dataUrl),
+        },
+        {
           id: `item_sum_${Date.now()}`,
           type: 'summary',
           priority: 'P2_HIGH',
@@ -282,7 +454,7 @@ export const BroadcastSetup: React.FC<BroadcastSetupProps> = ({
           status: 'queued',
           isLive: true,
           retryCount: 0,
-          segmentIndex: 4,
+          segmentIndex: 5,
         },
         {
           id: `item_aud_${Date.now()}`,
@@ -822,12 +994,127 @@ export const BroadcastSetup: React.FC<BroadcastSetupProps> = ({
                   allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
                 />
               ) : videoUrl ? (
-                <video src={videoUrl} controls className="w-full h-full object-contain" />
+                <video
+                  ref={previewVideoRef}
+                  src={videoUrl}
+                  controls
+                  crossOrigin="anonymous"
+                  className="w-full h-full object-contain"
+                />
               ) : (
                 <div className="text-center p-4">
                   <FileVideo className="w-8 h-8 text-slate-600 mx-auto mb-2" />
                   <p className="text-xs text-slate-400">No video selected</p>
                   <p className="text-[10px] text-slate-500 mt-0.5">Test canvas will be used</p>
+                </div>
+              )}
+            </div>
+
+            {/* Snapshot Action Bar */}
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <button
+                type="button"
+                onClick={handleCapturePreviewSnapshot}
+                className="py-1.5 px-3 rounded-lg bg-indigo-950/60 hover:bg-indigo-900/80 border border-indigo-700/60 text-indigo-300 hover:text-white text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+              >
+                <Camera className="w-3.5 h-3.5 text-indigo-400" />
+                <span>Capture Snapshot</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setAutoCapturePreview(!autoCapturePreview)}
+                className={`py-1.5 px-2.5 rounded-lg border text-xs font-mono transition-colors cursor-pointer flex items-center gap-1.5 ${
+                  autoCapturePreview
+                    ? 'bg-emerald-950/80 border-emerald-500/70 text-emerald-300'
+                    : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white'
+                }`}
+                title="Automatically capture keyframe snapshot every 5 seconds"
+              >
+                <span
+                  className={`w-2 h-2 rounded-full ${
+                    autoCapturePreview ? 'bg-emerald-400 animate-pulse' : 'bg-slate-500'
+                  }`}
+                />
+                <span>Auto 5s: {autoCapturePreview ? 'ACTIVE' : 'OFF'}</span>
+              </button>
+
+              <span className="text-[11px] font-mono text-slate-400">
+                {snapshots.length} Keyframe{snapshots.length === 1 ? '' : 's'}
+              </span>
+            </div>
+
+            {/* Video Snapshots & Keyframe Gallery (Tier 3 Media) */}
+            <div className="p-3.5 rounded-lg bg-slate-950/80 border border-slate-800 space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="font-semibold text-slate-200 text-xs flex items-center gap-1.5">
+                  <Image className="w-3.5 h-3.5 text-indigo-400" />
+                  <span>Video Snapshots & Keyframes (Tier 3 Media)</span>
+                </span>
+                <span className="text-[10px] font-mono text-indigo-300 bg-indigo-950/80 px-2 py-0.5 rounded border border-indigo-800/60">
+                  Bandwidth Fallback
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-400">
+                High-contrast static snapshots preserved during severe bandwidth collapse. Click any snapshot to inspect or push as a scheduled transmission item.
+              </p>
+
+              {snapshots.length === 0 ? (
+                <div className="p-4 rounded border border-dashed border-slate-800 text-center text-xs text-slate-500">
+                  No snapshots extracted yet. Click "Capture Frame Snapshot" above.
+                </div>
+              ) : (
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
+                  {snapshots.map((snap) => (
+                    <div
+                      key={snap.id}
+                      className="group relative rounded-lg overflow-hidden border border-slate-800 bg-slate-900/60 hover:border-indigo-500/80 transition-all flex flex-col"
+                    >
+                      <div className="relative aspect-video bg-black flex items-center justify-center overflow-hidden">
+                        <img
+                          src={snap.dataUrl}
+                          alt={snap.label}
+                          className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                        />
+                        <span className="absolute bottom-1 left-1 text-[9px] font-mono bg-black/80 px-1.5 py-0.5 rounded text-cyan-300">
+                          T+{Math.round(snap.timestampSeconds)}s
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setActiveSnapshotModal(snap)}
+                          className="absolute top-1 right-1 w-6 h-6 rounded bg-black/70 hover:bg-black text-slate-300 hover:text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer"
+                          title="Enlarge snapshot"
+                        >
+                          <Maximize2 className="w-3 h-3" />
+                        </button>
+                      </div>
+
+                      <div className="p-2 flex-1 flex flex-col justify-between space-y-1.5">
+                        <span className="text-[10px] font-medium text-slate-300 line-clamp-1 block">
+                          {snap.label}
+                        </span>
+                        <div className="flex items-center gap-1 pt-1">
+                          <button
+                            type="button"
+                            onClick={() => handleQueueSnapshot(snap)}
+                            className="flex-1 py-1 rounded bg-indigo-600/30 hover:bg-indigo-600/60 border border-indigo-500/40 text-indigo-200 text-[10px] font-semibold flex items-center justify-center gap-1 transition-colors cursor-pointer"
+                            title="Queue this snapshot as a P3 Keyframe in the broadcast schedule"
+                          >
+                            <Plus className="w-2.5 h-2.5" />
+                            <span>Queue P3</span>
+                          </button>
+                          <a
+                            href={snap.dataUrl}
+                            download={`aura-snapshot-${Math.round(snap.timestampSeconds)}s.jpg`}
+                            className="p-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition-colors"
+                            title="Download snapshot"
+                          >
+                            <Download className="w-3 h-3" />
+                          </a>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               )}
             </div>
@@ -1238,6 +1525,69 @@ export const BroadcastSetup: React.FC<BroadcastSetupProps> = ({
           </div>
         </div>
       </div>
+
+      {/* High-Resolution Snapshot Lightbox Modal */}
+      {activeSnapshotModal && (
+        <div
+          className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-4"
+          onClick={() => setActiveSnapshotModal(null)}
+        >
+          <div
+            className="bg-slate-900 border border-slate-700 rounded-2xl max-w-2xl w-full p-4 overflow-hidden shadow-2xl relative space-y-3"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between pb-2 border-b border-slate-800">
+              <div className="flex items-center gap-2">
+                <Image className="w-4 h-4 text-indigo-400" />
+                <h4 className="text-sm font-semibold text-white">
+                  {activeSnapshotModal.label}
+                </h4>
+                <span className="text-[11px] font-mono text-cyan-300 bg-slate-950 px-2 py-0.5 rounded border border-slate-800">
+                  T+{Math.round(activeSnapshotModal.timestampSeconds)}s
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setActiveSnapshotModal(null)}
+                className="w-7 h-7 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white flex items-center justify-center cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="relative aspect-video rounded-xl overflow-hidden bg-black flex items-center justify-center border border-slate-800">
+              <img
+                src={activeSnapshotModal.dataUrl}
+                alt={activeSnapshotModal.label}
+                className="w-full h-full object-contain"
+              />
+            </div>
+
+            <div className="flex items-center justify-between pt-1 text-xs">
+              <button
+                type="button"
+                onClick={() => {
+                  handleQueueSnapshot(activeSnapshotModal);
+                  setActiveSnapshotModal(null);
+                }}
+                className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-semibold flex items-center gap-1.5 transition-colors cursor-pointer"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>Add as Scheduled P3 Keyframe</span>
+              </button>
+
+              <a
+                href={activeSnapshotModal.dataUrl}
+                download={`aura-keyframe-${Math.round(activeSnapshotModal.timestampSeconds)}s.jpg`}
+                className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-cyan-300 hover:text-white font-medium flex items-center gap-1.5 transition-colors"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>Download Snapshot</span>
+              </a>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

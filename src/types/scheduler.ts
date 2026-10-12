@@ -37,6 +37,7 @@ export interface ContentItem {
   rendition?: '1080p' | '720p' | '360p' | '144p' | 'audio_aac';
   urgencyScore?: number;
   segmentIndex?: number;
+  snapshotUrl?: string;
 }
 
 export type NetworkProfileType =

@@ -359,6 +359,7 @@ Return strictly valid JSON:
           content: keyframeContent,
           payloadBytes: 26000,
           deadlineSeconds: 45,
+          snapshotUrl: frames && frames.length > 0 ? frames[0] : undefined,
         },
         {
           id: `vid_aud_${Date.now()}_5`,

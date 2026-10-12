@@ -30,6 +30,7 @@ import { LiveEventLog } from '../studio/LiveEventLog';
 import { LiveTranscriptFeed } from '../studio/LiveTranscriptFeed';
 import { saveReportToStorage } from '../../services/reportStorage';
 import { PageId } from '../layout/Navbar';
+import { VideoSnapshot } from '../../services/videoMediaExtractor';
 
 interface LiveBroadcastStudioProps {
   initialItems: ContentItem[];
@@ -62,6 +63,7 @@ export const LiveBroadcastStudio: React.FC<LiveBroadcastStudioProps> = ({
   // Scheduler instance ref
   const schedulerRef = useRef<BroadcastingScheduler | null>(null);
   const [schedulerState, setSchedulerState] = useState<SchedulerState | null>(null);
+  const [latestLiveSnapshot, setLatestLiveSnapshot] = useState<VideoSnapshot | null>(null);
 
   // Initialize or reinitialize scheduler
   const initScheduler = (chosenMode: BroadcastMode, chosenNetwork: NetworkProfile) => {
@@ -271,6 +273,10 @@ export const LiveBroadcastStudio: React.FC<LiveBroadcastStudioProps> = ({
                 ? activeItem.content
                 : delivered.filter((d) => d.type === 'caption').slice(-1)[0]?.content;
 
+            const latestDeliveredKeyframe = delivered
+              .filter((d) => d.type === 'keyframe' || !!d.snapshotUrl)
+              .slice(-1)[0];
+
             return (
               <VideoPlayer
                 videoUrl={videoUrl}
@@ -280,6 +286,38 @@ export const LiveBroadcastStudio: React.FC<LiveBroadcastStudioProps> = ({
                 bandwidthKbps={network.bandwidthKbps}
                 activeItemTitle={activeItem?.title}
                 activeSubtitle={currentSubtitle}
+                latestSnapshotUrl={latestLiveSnapshot?.dataUrl || latestDeliveredKeyframe?.snapshotUrl}
+                onCaptureSnapshot={(snap) => {
+                  setLatestLiveSnapshot(snap);
+                  if (schedulerRef.current) {
+                    const currentState = schedulerRef.current.getState();
+                    const pendingKeyframe = currentState.queue.find(
+                      (it) => it.type === 'keyframe' && it.status === 'queued'
+                    );
+                    if (pendingKeyframe) {
+                      pendingKeyframe.snapshotUrl = snap.dataUrl;
+                      pendingKeyframe.title = snap.label;
+                      pendingKeyframe.content = `Auto 5s visual keyframe at T+${Math.round(snap.timestampSeconds)}s.`;
+                      pendingKeyframe.createdAt = timelineSeconds;
+                      setSchedulerState({ ...currentState });
+                    } else {
+                      handleInjectMessage({
+                        id: snap.id,
+                        type: 'keyframe',
+                        priority: 'P3_MEDIUM',
+                        title: snap.label,
+                        content: `Auto 5s visual keyframe at T+${Math.round(snap.timestampSeconds)}s.`,
+                        payloadBytes: 18500,
+                        createdAt: timelineSeconds,
+                        deadlineSeconds: 25,
+                        status: 'queued',
+                        isLive: true,
+                        retryCount: 0,
+                        snapshotUrl: snap.dataUrl,
+                      });
+                    }
+                  }
+                }}
                 isLive={true}
               />
             );

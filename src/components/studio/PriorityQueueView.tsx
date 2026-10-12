@@ -11,6 +11,8 @@ import {
   CheckCircle2,
   XCircle,
   TrendingUp,
+  Maximize2,
+  X,
 } from 'lucide-react';
 import { ContentItem, ContentType, PriorityClass } from '../../types/scheduler';
 
@@ -34,6 +36,7 @@ export const PriorityQueueView: React.FC<PriorityQueueViewProps> = ({
   timelineSeconds,
 }) => {
   const [filterTab, setFilterTab] = useState<'all' | 'queued' | 'delivered' | 'deferred' | 'expired'>('all');
+  const [snapshotModalUrl, setSnapshotModalUrl] = useState<{ url: string; title: string } | null>(null);
 
   const formatBytes = (bytes: number) => {
     if (bytes < 1024) return `${bytes} B`;
@@ -262,6 +265,29 @@ export const PriorityQueueView: React.FC<PriorityQueueViewProps> = ({
                       <p className="text-[11px] text-slate-400 line-clamp-1 mt-0.5">
                         {item.content}
                       </p>
+
+                      {/* Snapshot Visual Preview if available */}
+                      {item.snapshotUrl && (
+                        <div
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setSnapshotModalUrl({ url: item.snapshotUrl!, title: item.title });
+                          }}
+                          className="mt-2 relative inline-flex items-center gap-2 bg-slate-950/70 border border-slate-700/80 rounded-lg p-1.5 cursor-pointer hover:border-cyan-500 transition-colors group"
+                        >
+                          <img
+                            src={item.snapshotUrl}
+                            alt={item.title}
+                            className="w-16 h-10 object-cover rounded bg-black shrink-0"
+                          />
+                          <div className="text-[10px] pr-2">
+                            <span className="font-semibold text-cyan-300 flex items-center gap-1">
+                              📸 Snapshot <Maximize2 className="w-2.5 h-2.5 opacity-60 group-hover:opacity-100" />
+                            </span>
+                            <span className="text-slate-400 block">Click to view full image</span>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   </div>
 
@@ -324,6 +350,50 @@ export const PriorityQueueView: React.FC<PriorityQueueViewProps> = ({
           })
         )}
       </div>
+
+      {/* Full-resolution Snapshot Lightbox Modal */}
+      {snapshotModalUrl && (
+        <div
+          className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"
+          onClick={() => setSnapshotModalUrl(null)}
+        >
+          <div
+            className="bg-slate-900 border border-slate-700 rounded-2xl max-w-2xl w-full p-4 overflow-hidden shadow-2xl relative"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800 mb-3">
+              <h4 className="text-sm font-semibold text-white flex items-center gap-2">
+                <span>📸 Visual Keyframe Snapshot:</span>
+                <span className="text-cyan-300 font-normal">{snapshotModalUrl.title}</span>
+              </h4>
+              <button
+                type="button"
+                onClick={() => setSnapshotModalUrl(null)}
+                className="w-7 h-7 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white flex items-center justify-center"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="relative aspect-video rounded-xl overflow-hidden bg-black flex items-center justify-center border border-slate-800">
+              <img
+                src={snapshotModalUrl.url}
+                alt={snapshotModalUrl.title}
+                className="w-full h-full object-contain"
+              />
+            </div>
+            <div className="flex items-center justify-between mt-3 text-xs text-slate-400">
+              <span>Tier 3 Media: Preserved high-contrast visual snapshot</span>
+              <a
+                href={snapshotModalUrl.url}
+                download="aura-keyframe-snapshot.jpg"
+                className="text-cyan-400 hover:text-cyan-300 font-medium underline"
+              >
+                Download Snapshot
+              </a>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
